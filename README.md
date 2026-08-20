@@ -27,6 +27,7 @@ Brings Bayesian optimization (Optuna) to your local & embedded AI models.
 - **Built in system warmup** to ensure benchmarking is done under real-world, “steady-state” conditions.
 - **Grid search over categorical parameters** (for flags like --override-tensor and --flash-attn ) combined with Bayesian tuning of numerical ones.
 - **CLI interface:** All major parameters and paths are settable via command line or environment variable.
+- **Basic GUI:** `llama-optimus-gui` offers the same functionality in a simple window, including a built-in llama.cpp downloader.
 - **Built on:** [Optuna](https://optuna.org/) for hyperparameter optimization and [llama.cpp](https://github.com/ggerganov/llama.cpp) for inference.
 - Adapts to Apple Silicon, Linux x86, and NVIDIA GPU systems
 - Outputs copy-paste-ready commands for `llama-server` and `llama-bench`
@@ -49,26 +50,48 @@ Brings Bayesian optimization (Optuna) to your local & embedded AI models.
 
 ## Installation I (recommended)
 
-1. **Install llama-optimus from Pypi distribution**
+1. **Install llama-optimus** (with [pipx](https://pipx.pypa.io/) — no venv needed — or plain pip)
     ```bash
-    pip install llama-optimus
+    pipx install llama-optimus
+    # or: pip install llama-optimus
     ````
 
-2. **Launch llama-optimus**
+2. **Check your setup (optional)**
+    ```bash
+    llama-optimus --doctor
+    ```
+    Verifies llama-bench runs and finds your models. All `[OK]` = you are ready.
+
+3. **Launch llama-optimus**
     ```bash
     llama-optimus
     ```
 
-3. **Provide paths to `llama.cpp/build/bin` and `model.gguf`** 
-    During launch, you will be propted to provide the path to your ~/llama.cpp/build/bin directory, and also the path to your AI model ~/model.gguf. **Note:** You must have the latest version of llama.cpp (Follow the [llama.cpp instructions](https://github.com/ggerganov/llama.cpp#build).)
+4. **Provide paths to `llama.cpp/build/bin` and `model.gguf`** 
+    Common locations (PATH, `~/llama.cpp/build/bin`, LM Studio & Hugging Face model folders) are auto-detected, and detected models are offered in a numbered picker. Paths entered here are **remembered** in `~/.llama-optimus.cfg` — you will not be asked again. **Note:** You must have the latest version of llama.cpp (release > 3667; follow the [llama.cpp instructions](https://github.com/ggerganov/llama.cpp#build)).
  
-4. **For a quick test** lauch with no warmup flag, and with few token per trail loop 
+5. **For a quick test** (fast, low accuracy):
     ```bash
-    llama-optimus --trials 5 --repeat 2 --no-warmup --n-tokens 20 --metric tg    
+    llama-optimus --preset quick    
     ```
 
+    (equivalent to `--trials 5 --repeat 2 --no-warmup --n-tokens 20`)
 
-## Intallation II (dev option)
+### Windows notes
+
+Set the environment variables in PowerShell:
+```powershell
+$env:LLAMA_BIN  = "C:\path	o\llama.cppuildin"
+$env:MODEL_PATH = "C:\path	o\model.gguf"
+```
+
+or in cmd:
+```bat
+set LLAMA_BIN=C:\path	o\llama.cppuildin
+set MODEL_PATH=C:\path	o\model.gguf
+```
+
+## Installation II (dev option)
 
 1. **Clone this repo:**
     ```bash
@@ -100,7 +123,7 @@ Brings Bayesian optimization (Optuna) to your local & embedded AI models.
 
 ## ⚙️ Configuration
 
-- All arguments are optional except `--llama-bin` and `--model` (if not set as env variables).
+- All arguments are optional except `--llama-bin` and `--model` (if not set as env variables, auto-detected, or remembered from a previous run).
 - CLI flags **override environment variables**.
 
 ### Option A: **Set paths as environment variables**
@@ -179,16 +202,16 @@ llama-optimus --trials 25 -r 3 --metric tg
 
 * `--model`      Path to your `.gguf` model file (or set `$MODEL_PATH`)
 
-* `--trials`   Number of optimization trials (default: 35)
+* `--trials`   Number of optimization trials (default: 45; `--preset quick` uses 5)
 
 * `--metric`   Which throughput metric to optimize:
   `tg` = token generation speed,
   `pp` = prompt processing speed,
   `mean` = average of both
 
-* `-r` / `--repeat` How many repetitions per configuration (default: 2; use 1 for quick/dirty, 5 for robust)
+* `-r` / `--repeat` How many repetitions per configuration (default: 3; use 1 for quick/dirty, 5 for robust; `--preset quick` uses 2)
 
-* `--n-tokens`  Number of tokens to use for benchmarking. Larger = more stable measurements (default: 60).
+* `--n-tokens`  Number of tokens to use for benchmarking. Larger = more stable measurements (default: 192).
 
 * `--override-mode`  How to treat --override-tensor (default: scan):
     `none`: ignore this flag (do not scan over override-tensor space)
@@ -197,9 +220,15 @@ llama-optimus --trials 25 -r 3 --metric tg
 
 * `--n-warmup-tokens` Number of tokens passed to llama-bench during each warmup loop
 
-* `--warmup-runs`  Max warm-up iterations before optimisation (default: 30; minimum is 4; For no warmup, use the `--no-warmup` flag )
+* `--n-warmup-runs`  Max warm-up iterations before optimisation (default: 35; minimum is 4; For no warmup, use the `--no-warmup` flag )
 
 * `--no-warmup` Skip warmup phase (for test/debug purpose)
+
+* `--preset quick` Fast sanity run: 5 trials, 2 repeats, 20 tokens, no warmup
+
+* `--doctor` Run environment sanity checks (llama-bench, model, system) and exit
+
+* `--verbose` Show full llama-bench commands and Optuna logs for every trial (debug)
 
 
 
@@ -208,6 +237,35 @@ See all options:
 ```bash
 llama-optimus --help
 ```
+
+---
+
+## GUI
+
+Prefer not to use the terminal? llama-optimus ships with a basic GUI (zero extra dependencies — it uses Python's built-in tkinter):
+
+```bash
+llama-optimus-gui
+```
+
+Everything the CLI does, in a single window:
+
+- **Settings form**: llama.cpp bin + model pickers (auto-populated from common locations, with `Browse...` buttons), preset (`default`/`quick`), metric (`tg`/`pp`/`mean`), trials, repeat, n-tokens, NGL max, warmup, override mode and verbose — every CLI flag has a matching field.
+- **Live log**: all benchmark output streams into the log pane as it happens, including the per-trial progress line with best-so-far and ETA.
+- **Run / Stop**: run the optimization in the background; **Stop** aborts cleanly after the current llama-bench run finishes.
+- **Download llama.cpp...**: one-click download of prebuilt llama.cpp binaries (Windows x64/arm64: cpu, cuda, vulkan, rocm, sycl, ...) straight into the standard `llama/bin` directory (see below) — no manual download or path configuration needed.
+
+Paths entered in the GUI are remembered in `~/.llama-optimus.cfg` (the same file the CLI uses), so you only ever set them once.
+
+## The llama/bin directory
+
+You don't have to designate a llama.cpp path at all. Drop a llama.cpp build (the folder containing `llama-bench`/`llama-server`) into:
+
+```
+~/.llama-optimus/llama/bin          (Windows: %USERPROFILE%\.llama-optimus\llama\bin)
+```
+
+and llama-optimus finds it automatically — in the CLI (auto-detection), in the GUI (pre-filled dropdown), and it is the destination used by the GUI's built-in downloader.
 
 ---
 
@@ -276,7 +334,7 @@ llama-optimus --n-tokens 256
 ```
 
 Later, for a stable final score, re-run llama-bench with the best flags found (don't forget to warm-up first):
-```bas'
+```bash
 llama-bench ... -p 512 -n 256 -r 5 --progress
 ```
 
@@ -300,7 +358,7 @@ For this reason, llama-optimus warms-up before scanning the parameter space with
 **Keep in mind**: never trust cold-start numbers. 
 Warming up the system and waiting for stable, “saturated” (real-world) performance will make your optimizer results much more robust and grounded to real use cases.
 
-Make sure your fans turn on with the default number of warmup runs (default: 40). 
+Make sure your fans turn on with the default number of warmup runs (default: 35). 
 
 If you need more (or less) runs to warmup your system, consider passing --n-warmup-runs flag during llama-optimus launch:
 
@@ -325,7 +383,10 @@ llama-optimus/
 │    └── llama_optimus/
 │           ├── __init__.py
 │           ├── core.py   # all optimization/benchmark logic
-│           └── cli.py    # CLI interface (argparse, entrypoint)
+│           ├── cli.py    # CLI interface (argparse, entrypoint)
+│           ├── pipeline.py        # shared run pipeline (used by CLI and GUI)
+│           ├── gui.py             # tkinter GUI (entrypoint: llama-optimus-gui)
+│           ├── llamacpp_dl.py     # downloader for prebuilt llama.cpp binaries
 │           └── search_space.py      # the numerical search space 
 │           └── override_patterns.py # override-tensor patterns for use with llama.cpp.
 │

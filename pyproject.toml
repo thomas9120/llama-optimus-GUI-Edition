@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llama-optimus"
-version = "0.1.9"
+version = "0.2.0"
 description = "llama-optimus is a lightweight Python tool to automatically optimize llama.cpp performance flags for maximum tg & pp token/s throughput. Powered by Bayesian optimization with Optuna"
 authors = [
-  { name = "Bruno Arsioli", email = "YOUR_EMAIL@yourdomain.com" }
+  { name = "Bruno Arsioli" }
 ]
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dependencies = [
   "optuna>=3.0",
   "pandas"
@@ -30,6 +30,7 @@ Repository = "https://github.com/BrunoArsioli/llama-optimus"
 
 [project.scripts]
 llama-optimus = "llama_optimus.cli:main"
+llama-optimus-gui = "llama_optimus.gui:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

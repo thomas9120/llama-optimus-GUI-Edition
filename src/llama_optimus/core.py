@@ -17,6 +17,19 @@ from optuna.samplers import GridSampler
 from .override_patterns import OVERRIDE_PATTERNS   
 from .search_space import SEARCH_SPACE, max_threads 
 
+# per-trial debug output (full llama-bench commands); enable with --verbose
+_VERBOSE = False
+
+
+class OptimizationStopped(Exception):
+    """Raised when a stop_event is set mid-run (GUI Stop button). Aborts cleanly."""
+
+
+def _check_stop(stop_event):
+    """Raise OptimizationStopped if the caller passed a set stop_event."""
+    if stop_event is not None and stop_event.is_set():
+        raise OptimizationStopped("Optimization stopped by user.")
+
 
 class _TrialProgress:
     """Optuna callback printing one compact line per trial with best-so-far and ETA."""
@@ -53,7 +66,7 @@ def _pct(new, old):
         return "n/a"
     return f"{(new - old) / old * 100:+.1f}%"
 
-def estimate_max_ngl(llama_bench_path, model_path, min_ngl=0, max_ngl=SEARCH_SPACE['gpu_layers']['high']):
+def estimate_max_ngl(llama_bench_path, model_path, min_ngl=0, max_ngl=SEARCH_SPACE['gpu_layers']['high'], stop_event=None):
     """
     Estimate the maximum number of model layers (-ngl) that can be loaded into GPU/VRAM
     for the current hardware and selected model. Uses a binary search, running llama-bench
@@ -70,6 +83,7 @@ def estimate_max_ngl(llama_bench_path, model_path, min_ngl=0, max_ngl=SEARCH_SPA
     low, high = min_ngl, max_ngl
 
     while low < high:
+        _check_stop(stop_event)
         mid = (low + high + 1) // 2
         print(f"Testing for: -ngl = {mid}")
 
@@ -159,7 +173,7 @@ def run_llama_bench_with_csv(cmd, metric):
     return metric_value
 
 
-def objective_1(trial, n_tokens, metric, repeat, llama_bench_path, model_path):
+def objective_1(trial, n_tokens, metric, repeat, llama_bench_path, model_path, stop_event=None):
     """
     Objective function for Optuna optimization. Samples a set of performance parameters,
     builds the llama-bench command, runs the benchmark, and returns the throughput metric.
@@ -172,6 +186,8 @@ def objective_1(trial, n_tokens, metric, repeat, llama_bench_path, model_path):
     Returns:
         float: The throughput value to maximize (tokens/sec).
     """
+    _check_stop(stop_event)
+
     # Sample params
     batch        = trial.suggest_int('batch', SEARCH_SPACE['batch_size']['low'], SEARCH_SPACE['batch_size']['high'])
     u_batch      = trial.suggest_int('u_batch', SEARCH_SPACE['ubatch_size']['low'], SEARCH_SPACE['ubatch_size']['high'])
@@ -212,9 +228,10 @@ def objective_1(trial, n_tokens, metric, repeat, llama_bench_path, model_path):
         cmd_1 += ["-n", str(n_tokens), "-p", str(2*n_tokens)]  # tokens to generate and process 
 
     # debug
-    print("")
-    print(f"cmd_1: {cmd_1}")
-    print("")
+    if _VERBOSE:
+        print("")
+        print(f"cmd_1: {cmd_1}")
+        print("")
     
     try:
         tokens_per_sec = run_llama_bench_with_csv(cmd_1, metric)
@@ -226,7 +243,7 @@ def objective_1(trial, n_tokens, metric, repeat, llama_bench_path, model_path):
     # i.e. this trial will be considered a failure but not fatal.
 
 
-def objective_2(trial, n_tokens, metric, repeat, llama_bench_path, model_path, override_mode, batch, u_batch, threads, gpu_layers):
+def objective_2(trial, n_tokens, metric, repeat, llama_bench_path, model_path, override_mode, batch, u_batch, threads, gpu_layers, stop_event=None):
     """
     Objective function for Optuna scan over the entire categorical parameter space
 
@@ -237,8 +254,11 @@ def objective_2(trial, n_tokens, metric, repeat, llama_bench_path, model_path, o
     Returns:
         float: The throughput value to maximize (tokens/sec).
     """
+    _check_stop(stop_event)
+
     # for debug
-    print(f"Running objective_2 with batch={batch}, u_batch={u_batch}, threads={threads}, gpu_layers={gpu_layers}")
+    if _VERBOSE:
+        print(f"Running objective_2 with batch={batch}, u_batch={u_batch}, threads={threads}, gpu_layers={gpu_layers}")
 
 
     # Build llama-bench command (can edit to add more flags)
@@ -275,9 +295,10 @@ def objective_2(trial, n_tokens, metric, repeat, llama_bench_path, model_path, o
             cmd_2 += ["--override-tensor", OVERRIDE_PATTERNS[override_key]]   
 
     # debug 
-    print("")
-    print(f"cmd_2: {cmd_2} ")
-    print("")
+    if _VERBOSE:
+        print("")
+        print(f"cmd_2: {cmd_2} ")
+        print("")
 
     try:
         tokens_per_sec = run_llama_bench_with_csv(cmd_2, metric)
@@ -287,7 +308,7 @@ def objective_2(trial, n_tokens, metric, repeat, llama_bench_path, model_path, o
         return 0.0
 
 
-def objective_3(trial, n_tokens, metric, repeat, llama_bench_path, model_path, override_pattern, flash_attn, override_mode):
+def objective_3(trial, n_tokens, metric, repeat, llama_bench_path, model_path, override_pattern, flash_attn, override_mode, stop_event=None):
     """
     Objective function for Optuna optimization. 
     After we select promising '--override-tensor' and '--flash-attn'
@@ -298,11 +319,13 @@ def objective_3(trial, n_tokens, metric, repeat, llama_bench_path, model_path, o
         trial (optuna.trial.Trial): The current Optuna trial object.
         metric (str): The performance metric to optimize ("tg", "pp", or "mean").
         repeat (int): Number of llama-bench repetitions for every trial; used to calculate robust <token/s> value
-        override_tensor
-        flash_attn
+        override_tensor (frozen best from stage 2)
+        flash_attn (frozen best from stage 2)
     Returns:
         float: The throughput value to maximize (tokens/sec).
     """
+    _check_stop(stop_event)
+
     # Sample params
     batch        = trial.suggest_int('batch', SEARCH_SPACE['batch_size']['low'], SEARCH_SPACE['batch_size']['high'])
     u_batch      = trial.suggest_int('u_batch', SEARCH_SPACE['ubatch_size']['low'], SEARCH_SPACE['ubatch_size']['high'])
@@ -344,9 +367,10 @@ def objective_3(trial, n_tokens, metric, repeat, llama_bench_path, model_path, o
             cmd_3 += ["--override-tensor", OVERRIDE_PATTERNS[override_key]]   
 
     # debug
-    print("")
-    print(f"cmd_3: {cmd_3}")
-    print("")
+    if _VERBOSE:
+        print("")
+        print(f"cmd_3: {cmd_3}")
+        print("")
 
     try:
         tokens_per_sec = run_llama_bench_with_csv(cmd_3, metric)
@@ -356,7 +380,7 @@ def objective_3(trial, n_tokens, metric, repeat, llama_bench_path, model_path, o
         return 0.0
 
 
-def warmup_until_stable(llama_bench_path, model_path, metric, ngl, min_runs, n_warmup_runs, n_warmup_tokens, max_threads):
+def warmup_until_stable(llama_bench_path, model_path, metric, ngl, min_runs, n_warmup_runs, n_warmup_tokens, max_threads, stop_event=None):
     """
     Warm-up doctrine:
     - Always run at least 4 warmup cycles before checking for stability.
@@ -390,6 +414,7 @@ def warmup_until_stable(llama_bench_path, model_path, metric, ngl, min_runs, n_w
         n_warmup_runs = min_runs # force a minimum number of warmup runs
     
     for i in range(n_warmup_runs):
+        _check_stop(stop_event)
         performance = run_llama_bench_with_csv(cmd_wup, metric)
         history.append(performance)
         print(f"Warmup {i+1}: {performance:.2f} tok/s")
@@ -401,7 +426,7 @@ def warmup_until_stable(llama_bench_path, model_path, metric, ngl, min_runs, n_w
     return history
 
 
-def run_optimization(n_trials, n_tokens, metric, repeat, llama_bench_path, model_path, llama_bin_path, override_mode):  
+def run_optimization(n_trials, n_tokens, metric, repeat, llama_bench_path, model_path, llama_bin_path, override_mode, verbose=False, stop_event=None):  
     """
     Run the Optuna optimization loop for a given number of trials, using the provided metric.
     At the end, print the best configuration and ready-to-use commands for llama-server/llama-bench.
@@ -416,9 +441,17 @@ def run_optimization(n_trials, n_tokens, metric, repeat, llama_bench_path, model
         metric (str): Which throughput metric to optimize ("tg", "pp", or "mean"). Default: tg.
         ...[TBD]
 
-    Returns:
-        None 
     """
+
+    global _VERBOSE
+    _VERBOSE = verbose
+    # our per-trial progress line replaces Optuna's own verbose logging
+    # (ERROR level when quiet also hides the traceback Optuna logs when the
+    # user aborts via the GUI Stop button)
+    optuna.logging.set_verbosity(optuna.logging.INFO if verbose else optuna.logging.ERROR)
+    if not verbose:
+        import warnings
+        warnings.filterwarnings("ignore", category=optuna.exceptions.ExperimentalWarning)
 
     # outpus
     print("")
@@ -437,7 +470,7 @@ def run_optimization(n_trials, n_tokens, metric, repeat, llama_bench_path, model
     sampler = TPESampler(multivariate=True)  # Others: "random": RandomSampler(); "cmaes": CmaEsSampler(),
     study_1 = optuna.create_study(direction="maximize", sampler=sampler)
     # use lambda to inject metric, repeat ...  
-    study_1.optimize(lambda trial: objective_1(trial, n_tokens, metric, repeat, llama_bench_path, model_path),
+    study_1.optimize(lambda trial: objective_1(trial, n_tokens, metric, repeat, llama_bench_path, model_path, stop_event),
                      n_trials=n_trials, callbacks=[_TrialProgress("Stage 1/3", n_trials)])
     print("")
     print("Best config Stage_1:", study_1.best_trial.params) 
@@ -473,7 +506,7 @@ def run_optimization(n_trials, n_tokens, metric, repeat, llama_bench_path, model
     # use lambda to inject metric, repeat ...  
     study_2.optimize(lambda trial: objective_2(trial, n_tokens, metric, repeat, llama_bench_path, model_path, 
                                                override_mode, best_1['batch'], best_1['u_batch'], 
-                                               best_1['threads'], best_1['gpu_layers']),
+                                               best_1['threads'], best_1['gpu_layers'], stop_event),
                      n_trials=n_trials_2, callbacks=[_TrialProgress("Stage 2/3", n_trials_2)])
     print("")
     print("Best config Stage_2:", study_2.best_trial.params)
@@ -499,7 +532,7 @@ def run_optimization(n_trials, n_tokens, metric, repeat, llama_bench_path, model
     study_3 = optuna.create_study(direction="maximize", sampler=sampler_3)
     # use lambda to inject metric, repeat ...  
     study_3.optimize(lambda trial: objective_3(trial, n_tokens, metric, repeat, llama_bench_path, model_path, 
-                                               best_2['override_tensor'], best_2['flash_attn'], override_mode),
+                                               best_2['override_tensor'], best_2['flash_attn'], override_mode, stop_event),
                      n_trials=n_trials, callbacks=[_TrialProgress("Stage 3/3", n_trials)])
     print("")
     print("Best config Stage_3:", study_3.best_trial.params)

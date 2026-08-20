@@ -1,4 +1,5 @@
 # test/test_core.py
+import os
 from pathlib import Path
 
 def test_search_space_shape():
@@ -39,4 +40,30 @@ def test_saved_paths_roundtrip(monkeypatch):
         cli._save_paths("/some/llama/bin", "/some/model.gguf")
         assert cli._saved_path("llama_bin") == "/some/llama/bin"
         assert cli._saved_path("model") == "/some/model.gguf"
+
+
+def test_find_llama_bins_and_models():
+    """Auto-detection finds a source-build llama-bench dir and .gguf models under a fake home."""
+    import tempfile
+    from llama_optimus import cli
+    with tempfile.TemporaryDirectory() as d:
+        home = Path(d)
+        exe = "llama-bench.exe" if os.name == "nt" else "llama-bench"
+        (home / "llama.cpp/build/bin").mkdir(parents=True)
+        (home / "llama.cpp/build/bin" / exe).write_text("")
+        bins = cli._find_llama_bins(home=home)
+        assert len(bins) == 1 and bins[0] == str(home / "llama.cpp/build/bin")
+
+        (home / ".lmstudio/models/vendor").mkdir(parents=True)
+        (home / ".lmstudio/models/vendor/m.gguf").write_text("")
+        (home / "models").mkdir()
+        (home / "models/n.gguf").write_text("")
+        (home / "models/not_a_model.txt").write_text("")
+        found = cli._find_models(home=home)
+        assert sorted(found) == sorted([str(home / ".lmstudio/models/vendor/m.gguf"), str(home / "models/n.gguf")])
+
+        # empty home -> nothing found, no crash
+        with tempfile.TemporaryDirectory() as d2:
+            assert cli._find_llama_bins(home=Path(d2)) == []
+            assert cli._find_models(home=Path(d2)) == []
 
