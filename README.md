@@ -45,13 +45,14 @@ The easiest way to use llama-optimus — no terminal required:
     pipx install llama-optimus
     # or: pip install llama-optimus
     ````
-    On Windows, you can instead clone this repo and double-click **`install.bat`**.
+    On Windows, you can instead clone this repo and double-click **`install.bat`**;
+    on macOS/Linux, clone and run **`./install.sh`**.
 
 2. **Launch the GUI**:
     ```bash
     llama-optimus-gui
     ```
-    On Windows, simply double-click **`start_gui.bat`**.
+    On Windows, simply double-click **`start_gui.bat`**; on macOS/Linux, run **`./start_gui.sh`**.
 
 3. **Get llama.cpp** (pick one):
     - Click **Download llama.cpp...** in the GUI — one-click download of prebuilt binaries (cpu, cuda, vulkan, rocm, sycl, ...) straight into the standard `llama/bin` directory. No path configuration needed.
@@ -421,6 +422,8 @@ llama-optimus/
 ├── requirements.txt
 ├── install.bat                 # Windows one-click installer
 ├── start_gui.bat               # Windows double-click GUI launcher
+├── install.sh                  # macOS/Linux one-click installer
+├── start_gui.sh                # macOS/Linux GUI launcher
 ├── setup.py
 └── README.md
 ```
