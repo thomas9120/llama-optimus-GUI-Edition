@@ -2,16 +2,56 @@
 # Core functions for llama-optimus optimization
 
 import re
+import io
+import time
 import optuna
 import os
+import platform
 import shutil
 import pandas as pd 
 import tempfile
 import subprocess
+from datetime import datetime
 from optuna.samplers import TPESampler
 from optuna.samplers import GridSampler
 from .override_patterns import OVERRIDE_PATTERNS   
 from .search_space import SEARCH_SPACE, max_threads 
+
+
+class _TrialProgress:
+    """Optuna callback printing one compact line per trial with best-so-far and ETA."""
+
+    def __init__(self, stage, total):
+        self.stage, self.total, self.i, self.t0 = stage, total, 0, time.time()
+
+    def __call__(self, study, trial):
+        self.i += 1
+        elapsed = time.time() - self.t0
+        remaining = elapsed / self.i * (self.total - self.i)
+        print(f"[{self.stage}] trial {self.i}/{self.total} | best so far: {study.best_value:.2f} tok/s | "
+              f"elapsed {_fmt_min(elapsed)} | est. remaining {_fmt_min(remaining)}")
+
+
+def _fmt_min(seconds):
+    return f"{seconds / 60:.1f}m"
+
+
+def _parse_bench_csv(csv_text):
+    """Parse llama-bench CSV output into {'tg': tokens/s or None, 'pp': tokens/s or None}."""
+    df = pd.read_csv(io.StringIO(csv_text))
+    tg = df[df["n_gen"] > 0]
+    pp = df[df["n_prompt"] > 0]
+    return {
+        "tg": float(tg["avg_ts"].iloc[0]) if not tg.empty else None,
+        "pp": float(pp["avg_ts"].iloc[0]) if not pp.empty else None,
+    }
+
+
+def _pct(new, old):
+    """Relative improvement of new vs old, e.g. '+12.3%'; 'n/a' when either is missing/zero."""
+    if not new or not old:
+        return "n/a"
+    return f"{(new - old) / old * 100:+.1f}%"
 
 def estimate_max_ngl(llama_bench_path, model_path, min_ngl=0, max_ngl=SEARCH_SPACE['gpu_layers']['high']):
     """
@@ -388,10 +428,17 @@ def run_optimization(n_trials, n_tokens, metric, repeat, llama_bench_path, model
     print("")
 
     # TRIALS: FIRST STAGE
+    n_trials_2 = len(OVERRIDE_PATTERNS) * 2 if override_mode == "scan" else 2
+    total_trials = n_trials + n_trials_2 + n_trials
+    print("")
+    print(f"Total benchmark runs ahead: ~{total_trials} (3 stages: {n_trials} + {n_trials_2} + {n_trials} trials).")
+    print("You can abort anytime with Ctrl+C; the progress line always shows the best configuration so far.")
+
     sampler = TPESampler(multivariate=True)  # Others: "random": RandomSampler(); "cmaes": CmaEsSampler(),
     study_1 = optuna.create_study(direction="maximize", sampler=sampler)
     # use lambda to inject metric, repeat ...  
-    study_1.optimize(lambda trial: objective_1(trial, n_tokens, metric, repeat, llama_bench_path, model_path), n_trials=n_trials)
+    study_1.optimize(lambda trial: objective_1(trial, n_tokens, metric, repeat, llama_bench_path, model_path),
+                     n_trials=n_trials, callbacks=[_TrialProgress("Stage 1/3", n_trials)])
     print("")
     print("Best config Stage_1:", study_1.best_trial.params) 
     print(f"Best Stage_1 {metric} tokens/sec:", study_1.best_value)
@@ -426,7 +473,8 @@ def run_optimization(n_trials, n_tokens, metric, repeat, llama_bench_path, model
     # use lambda to inject metric, repeat ...  
     study_2.optimize(lambda trial: objective_2(trial, n_tokens, metric, repeat, llama_bench_path, model_path, 
                                                override_mode, best_1['batch'], best_1['u_batch'], 
-                                               best_1['threads'], best_1['gpu_layers']), n_trials=n_trials_2)
+                                               best_1['threads'], best_1['gpu_layers']),
+                     n_trials=n_trials_2, callbacks=[_TrialProgress("Stage 2/3", n_trials_2)])
     print("")
     print("Best config Stage_2:", study_2.best_trial.params)
     print(f"Best Stage_2 {metric} tokens/sec:", study_2.best_value)
@@ -451,7 +499,8 @@ def run_optimization(n_trials, n_tokens, metric, repeat, llama_bench_path, model
     study_3 = optuna.create_study(direction="maximize", sampler=sampler_3)
     # use lambda to inject metric, repeat ...  
     study_3.optimize(lambda trial: objective_3(trial, n_tokens, metric, repeat, llama_bench_path, model_path, 
-                                               best_2['override_tensor'], best_2['flash_attn'], override_mode), n_trials=n_trials)
+                                               best_2['override_tensor'], best_2['flash_attn'], override_mode),
+                     n_trials=n_trials, callbacks=[_TrialProgress("Stage 3/3", n_trials)])
     print("")
     print("Best config Stage_3:", study_3.best_trial.params)
     print(f"Best Stage_3 {metric} tokens/sec:", study_3.best_value)
@@ -462,6 +511,11 @@ def run_optimization(n_trials, n_tokens, metric, repeat, llama_bench_path, model
 
     ### END OF TRIALS ###
 
+    # llama-server lives next to llama-bench (handles Windows Release/ subfolder too)
+    server_dir = os.path.dirname(llama_bench_path)
+    server_exe = "llama-server.exe" if platform.system() == "Windows" else "llama-server"
+    server_path = os.path.join(server_dir, server_exe)
+
     print("")
     print("You are ready to run a local llama-server:")
     print("If you launch llama-server, it will be listening at http://127.0.0.1:8080/ in your browser.")
@@ -469,15 +523,12 @@ def run_optimization(n_trials, n_tokens, metric, repeat, llama_bench_path, model
 
     # 1. llama-server (inference); will be listening at http://127.0.0.1:8080/ in your browser. 
     llama_server_cmd = (
-        #f"{llama_bin_path}/llama-server" 
-        #f" --model {model_path}"   # path_to_model.gguf 
-        f" $LLAMA_BIN/llama-server"
-        f" --model $MODEL"
+        f"{server_path}"
+        f" --model {model_path}"
         f" -t {best_3['threads']}"
         f" --batch-size {best_3['batch']}"
         f" --ubatch-size {best_3['u_batch']}"
         f" -ngl {best_3['gpu_layers']}"
-        #f" --flash-attn-type {best['flash_type']}"
     )
 
     if best_2['override_tensor'] != "none":
@@ -486,19 +537,6 @@ def run_optimization(n_trials, n_tokens, metric, repeat, llama_bench_path, model
     # for llama-server, --flash-att is of 'action' type (i.e. do not accept <0|1> values).
     if best_2['flash_attn'] == 1:
         llama_server_cmd += f" --flash-attn "    
-
-    print("")
-    print("###################################################################")
-    print("# You can now launch an optimized llama-server.                   #")
-    print("# just run next lines in your terminal:                           #")
-    print("###################################################################")
-    print("")
-    print(f"LLAMA_BIN={llama_bin_path}")
-    print(f"MODEL={model_path}")
-    print("")
-    print(f"{llama_server_cmd}")
-    print("")
-
 
     # 2. llama-bench (benchmark for both tg and pp)
     llama_bench_cmd = (
@@ -510,7 +548,7 @@ def run_optimization(n_trials, n_tokens, metric, repeat, llama_bench_path, model
         f" -ngl {best_3['gpu_layers']}"
         f" --flash-attn {best_2['flash_attn']}"  # in llama-server, --flash-attn is type 'int', accepts <0|1> values.
         #f" --override-tensor {OVERRIDE_PATTERNS[best_2['override_tensor']]}"
-        f" -n 128 -p 256 -r 6 --no-warmup --progress "
+        f" -n 128 -p 256 -r 6 --no-warmup -o csv"
     )
 
     if best_2['override_tensor'] != "none":
@@ -521,7 +559,7 @@ def run_optimization(n_trials, n_tokens, metric, repeat, llama_bench_path, model
     llama_bench_cmd_default = (
         f"{llama_bench_path}"
         f" --model {model_path}"    # path_to_model.gguf
-        f" -n 128 -p 256 -r 6 --no-warmup --progress " # internal llama-bench --no-warmup; unrelated to llama-optimus warm-up flag
+        f" -n 128 -p 256 -r 6 --no-warmup -o csv" # internal llama-bench --no-warmup; unrelated to llama-optimus warm-up flag
     )
 
 
@@ -533,10 +571,8 @@ def run_optimization(n_trials, n_tokens, metric, repeat, llama_bench_path, model
     print(f"{llama_bench_cmd}")
     print("")
 
-    # launch optimized bench
-    # Use shell=True instead of shlex.split() because shlex interprets
-    # backslashes as escape characters, breaking Windows paths.
-    subprocess.run(llama_bench_cmd, check=True, shell=True)
+    # launch optimized bench; capture output to parse optimized tok/s
+    optimized = _run_final_bench(llama_bench_cmd)
 
 
     print("")
@@ -553,8 +589,49 @@ def run_optimization(n_trials, n_tokens, metric, repeat, llama_bench_path, model
     print("")
 
     # launch non-optimized (default) bench
-    subprocess.run(llama_bench_cmd_default, check=True, shell=True)
+    default = _run_final_bench(llama_bench_cmd_default)
 
-    # [TBD] add % of improvement 
+    # comparison summary
+    print("")
+    print("################################")
+    print("# OPTIMIZED vs DEFAULT          #")
+    print("################################")
+    print("")
+    print(f"Token generation  (tg): default {default['tg'] or 'n/a'} tok/s -> optimized {optimized['tg'] or 'n/a'} tok/s  [{_pct(optimized['tg'], default['tg'])}]")
+    print(f"Prompt processing (pp): default {default['pp'] or 'n/a'} tok/s -> optimized {optimized['pp'] or 'n/a'} tok/s  [{_pct(optimized['pp'], default['pp'])}]")
+
+    # save everything to a results file, so the best config never scrolls away
+    results_path = os.path.join(os.getcwd(), "optimus_results.txt")
+    with open(results_path, "w", encoding="utf-8") as f:
+        f.write(f"llama-optimus results  ({datetime.now():%Y-%m-%d %H:%M})\n")
+        f.write(f"model: {model_path}\n")
+        f.write(f"metric optimized: {metric}\n\n")
+        f.write(f"Best config: {best_3}\n")
+        f.write(f"override-tensor pattern: {best_2['override_tensor']}\n")
+        f.write(f"flash-attn: {best_2['flash_attn']}\n\n")
+        f.write("# Launch an optimized llama-server:\n")
+        f.write(f"{llama_server_cmd}\n\n")
+        f.write("# Benchmark optimized config:\n")
+        f.write(f"{llama_bench_cmd}\n\n")
+        f.write("# Benchmark default (non-optimized) config:\n")
+        f.write(f"{llama_bench_cmd_default}\n\n")
+        f.write("# Comparison (default -> optimized):\n")
+        f.write(f"tg: {default['tg']} -> {optimized['tg']} tok/s  [{_pct(optimized['tg'], default['tg'])}]\n")
+        f.write(f"pp: {default['pp']} -> {optimized['pp']} tok/s  [{_pct(optimized['pp'], default['pp'])}]\n")
+    print("")
+    print(f"Results saved to: {results_path}")
+
+
+def _run_final_bench(cmd):
+    """Run a final llama-bench command, print its output and return {'tg': .., 'pp': ..} tok/s."""
+    # Use shell=True instead of shlex.split() because shlex interprets
+    # backslashes as escape characters, breaking Windows paths.
+    result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
+    if result.returncode != 0:
+        print(result.stdout)
+        print(result.stderr)
+        raise RuntimeError(f"llama-bench failed (exit code {result.returncode})")
+    print(result.stdout)
+    return _parse_bench_csv(result.stdout)
 
 

@@ -1,14 +1,37 @@
 # llama_optimus/cli.py
 # handle parsing, validation, and env setup
 
-import argparse, os, sys
+import argparse, configparser, os, sys
 import platform 
 from pathlib import Path   
+from datetime import datetime
 from .core import run_optimization, estimate_max_ngl, warmup_until_stable
 from .override_patterns import OVERRIDE_PATTERNS   
 from .search_space import SEARCH_SPACE, max_threads 
 
 from llama_optimus import __version__
+
+CONFIG_PATH = Path.home() / ".llama-optimus.cfg"
+
+
+def _saved_path(key):
+    """Return a path remembered from a previous interactive session, or None."""
+    cp = configparser.ConfigParser()
+    if CONFIG_PATH.is_file():
+        cp.read(CONFIG_PATH)
+    if cp.has_option("paths", key):
+        return cp.get("paths", key)
+    return None
+
+
+def _save_paths(llama_bin, model):
+    cp = configparser.ConfigParser()
+    if CONFIG_PATH.is_file():
+        cp.read(CONFIG_PATH)
+    cp["paths"] = {"llama_bin": llama_bin, "model": model}
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        cp.write(f)
+    print(f"Paths saved to {CONFIG_PATH} (reused on next launch; delete the file to reset).")
 
 
 def main():
@@ -25,7 +48,10 @@ def main():
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
         )
-    parser.add_argument("--trials", type=int, default=45, help="Number of Optuna/optimization trials")
+    parser.add_argument("--trials", type=int, help="Number of Optuna/optimization trials (default: 45; 'quick' preset: 5)")
+    parser.add_argument("--preset", choices=["default", "quick"], default="default",
+        help="'quick': fast sanity run (5 trials, 2 repeats, no warmup, 20 tokens); "
+             "'default': thorough optimization")
     parser.add_argument("--model", type=str, help="Path to model (overrides env var)")
     parser.add_argument("--llama-bin", type=str, help="Path to llama.cpp build/bin folder (overrides env var)")
 
@@ -35,10 +61,10 @@ def main():
     parser.add_argument("--ngl-max",type=int, help="Maximum number of model layers for -ngl "
         "(skip estimation if provided; estimation runs by default).")
 
-    parser.add_argument("--repeat", "-r", type=int, default=3, help="Number of llama-bench runs per configuration "
-        "(higher = more robust, lower = faster; for quick assessment: 1)")
+    parser.add_argument("--repeat", "-r", type=int, help="Number of llama-bench runs per configuration "
+        "(higher = more robust, lower = faster; default: 3; 'quick' preset: 2; for quick assessment: 1)")
 
-    parser.add_argument("--n-tokens", type=int, default=192, help="Number of tokens used in llama-bench to test " \
+    parser.add_argument("--n-tokens", type=int, help="Number of tokens used in llama-bench to test " \
         "velocity of prompt processing and text generation. Keep in mind there is large variability in tok/s outputs. " \
         "If n_tokens is too low, uncertainty takes over, optimization may suffer. Still, if you need to lower it, " \
         "try to operate with n_tokens > 70 and --repeat 3. " \
@@ -65,10 +91,25 @@ def main():
     
     args = parser.parse_args()
 
+    # resolve preset-dependent defaults (only where the user did not pass a value explicitly)
+    if args.preset == "quick":
+        if args.trials is None:   args.trials = 5
+        if args.repeat is None:   args.repeat = 2
+        if args.n_tokens is None: args.n_tokens = 20
+        args.no_warmup = True
+        print("Quick preset: 5 trials, 2 repeats, no warmup, 20 tokens per test.")
+    else:
+        if args.trials is None:   args.trials = 45
+        if args.repeat is None:   args.repeat = 3
+        if args.n_tokens is None: args.n_tokens = 192
+
     # Set paths based on CLI flags, env vars, or prompt user to provide it
-    # Resolve llama_bin_path
-    llama_bin_path = (args.llama_bin or os.environ.get("LLAMA_BIN")
-        or input("Please, provide the path to your 'llama.cpp/build/bin' ").strip() )
+    # Resolve llama_bin_path  (priority: CLI flag > env var > saved config > interactive prompt)
+    prompted = False
+    llama_bin_path = (args.llama_bin or os.environ.get("LLAMA_BIN") or _saved_path("llama_bin"))
+    if not llama_bin_path:
+        llama_bin_path = input("Please, provide the path to your 'llama.cpp/build/bin' ").strip()
+        prompted = True
 
     # Check the operating system and build llama_bench_path
     if platform.system() == "Windows":
@@ -92,9 +133,11 @@ def main():
             sys.exit(f"ERROR: llama-bench not found at {llama_bench_path}")
 
 
-    # Resolve model_path
-    model_path = (args.model or os.environ.get("MODEL_PATH")
-        or input("Please, provide the path to your 'ai_model.gguf' ").strip() )
+    # Resolve model_path  (priority: CLI flag > env var > saved config > interactive prompt)
+    model_path = (args.model or os.environ.get("MODEL_PATH") or _saved_path("model"))
+    if not model_path:
+        model_path = input("Please, provide the path to your 'ai_model.gguf' ").strip()
+        prompted = True
 
     # Quick check if paths are set. ERROR msg if None or empty.
     if not llama_bin_path or not model_path:
@@ -108,6 +151,10 @@ def main():
     if not os.path.isfile(llama_bench_path):
         print(f"ERROR: llama-bench not found at {llama_bench_path}. ...", file=sys.stderr)
         sys.exit(1)
+
+    # remember paths given interactively, so the user is never asked twice
+    if prompted and llama_bin_path and model_path:
+        _save_paths(llama_bin_path, model_path)
 
     print("")
     print("#################")
