@@ -36,6 +36,43 @@ Brings Bayesian optimization (Optuna) to your local & embedded AI models.
 
 ---
 
+## Quick Start (GUI)
+
+The easiest way to use llama-optimus — no terminal required:
+
+1. **Install llama-optimus** (with [pipx](https://pipx.pypa.io/) — no venv needed — or plain pip):
+    ```bash
+    pipx install llama-optimus
+    # or: pip install llama-optimus
+    ````
+    On Windows, you can instead clone this repo and double-click **`install.bat`**.
+
+2. **Launch the GUI**:
+    ```bash
+    llama-optimus-gui
+    ```
+    On Windows, simply double-click **`start_gui.bat`**.
+
+3. **Get llama.cpp** (pick one):
+    - Click **Download llama.cpp...** in the GUI — one-click download of prebuilt binaries (cpu, cuda, vulkan, rocm, sycl, ...) straight into the standard `llama/bin` directory. No path configuration needed.
+    - Or drop your own llama.cpp build into `~/.llama-optimus/llama/bin` (see [The llama/bin directory](#the-llamabin-directory)).
+    - Or point the "llama.cpp bin" field at any existing `llama.cpp/build/bin` folder with the `Browse...` button.
+
+4. **Pick your model**: select a detected `.gguf` from the dropdown or `Browse...` to one.
+
+5. **Click Run** and watch the live log:
+    - **Preset `quick`** — fast sanity run (5 trials, 2 repeats, 20 tokens, no warmup), good for a first test (~minutes).
+    - **Preset `default`** — thorough optimization (45 trials, 3 repeats, 192 tokens, with warmup). Runs for a while; **Stop** aborts cleanly anytime.
+    - Optimize what matters to you: metric `tg` (token generation), `pp` (prompt processing) or `mean` (both).
+
+6. **Done**: the log ends with your **best configuration**, the optimized-vs-default comparison, and a copy-paste-ready `llama-server` command (also saved to `optimus_results.txt`).
+
+Paths entered in the GUI are remembered in `~/.llama-optimus.cfg`, so you only ever set them once.
+
+Prefer the terminal? The sections below cover the same functionality via the CLI (see [Usage](#usage)).
+
+---
+
 ## Requirements
 
 - Python 3.10+  
@@ -48,7 +85,7 @@ Brings Bayesian optimization (Optuna) to your local & embedded AI models.
 
 ---
 
-## Installation I (recommended)
+## Installation I (CLI)
 
 1. **Install llama-optimus** (with [pipx](https://pipx.pypa.io/) — no venv needed — or plain pip)
     ```bash
@@ -79,9 +116,9 @@ Brings Bayesian optimization (Optuna) to your local & embedded AI models.
 
 ### Windows notes
 
-**Easiest on Windows:** after cloning this repo, double-click `install.bat` (one-time setup — installs llama-optimus into your Python), then double-click `start_gui.bat` any time you want the GUI. No terminal needed.
+See the [Quick Start (GUI)](#quick-start-gui) for the no-terminal route (`install.bat` + `start_gui.bat`).
 
-Set the environment variables in PowerShell:
+To use the CLI, set the environment variables in PowerShell:
 ```powershell
 $env:LLAMA_BIN  = "C:\path	o\llama.cppuildin"
 $env:MODEL_PATH = "C:\path	o\model.gguf"
@@ -241,23 +278,6 @@ llama-optimus --help
 ```
 
 ---
-
-## GUI
-
-Prefer not to use the terminal? llama-optimus ships with a basic GUI (zero extra dependencies — it uses Python's built-in tkinter):
-
-```bash
-llama-optimus-gui
-```
-
-Everything the CLI does, in a single window:
-
-- **Settings form**: llama.cpp bin + model pickers (auto-populated from common locations, with `Browse...` buttons), preset (`default`/`quick`), metric (`tg`/`pp`/`mean`), trials, repeat, n-tokens, NGL max, warmup, override mode and verbose — every CLI flag has a matching field.
-- **Live log**: all benchmark output streams into the log pane as it happens, including the per-trial progress line with best-so-far and ETA.
-- **Run / Stop**: run the optimization in the background; **Stop** aborts cleanly after the current llama-bench run finishes.
-- **Download llama.cpp...**: one-click download of prebuilt llama.cpp binaries (Windows x64/arm64: cpu, cuda, vulkan, rocm, sycl, ...) straight into the standard `llama/bin` directory (see below) — no manual download or path configuration needed.
-
-Paths entered in the GUI are remembered in `~/.llama-optimus.cfg` (the same file the CLI uses), so you only ever set them once.
 
 ## The llama/bin directory
 
