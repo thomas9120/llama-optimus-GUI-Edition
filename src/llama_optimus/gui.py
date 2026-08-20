@@ -377,6 +377,7 @@ class _DownloadDialog(tk.Toplevel):
                                    f"{a['size_mb']:8.1f} MB")
         self.lst.selection_set(0)
         self.var_status.set(f"{len(assets)} prebuilt asset(s) found. Select one and click Download.")
+        self.btn_dl.configure(state="normal")
 
     def _fail(self, msg):
         self.var_status.set(msg)
