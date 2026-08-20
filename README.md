@@ -79,6 +79,8 @@ Brings Bayesian optimization (Optuna) to your local & embedded AI models.
 
 ### Windows notes
 
+**Easiest on Windows:** after cloning this repo, double-click `install.bat` (one-time setup — installs llama-optimus into your Python), then double-click `start_gui.bat` any time you want the GUI. No terminal needed.
+
 Set the environment variables in PowerShell:
 ```powershell
 $env:LLAMA_BIN  = "C:\path	o\llama.cppuildin"
@@ -397,6 +399,8 @@ llama-optimus/
 │   └── llama.optimus_logo.png
 │
 ├── requirements.txt
+├── install.bat                 # Windows one-click installer
+├── start_gui.bat               # Windows double-click GUI launcher
 ├── setup.py
 └── README.md
 ```
